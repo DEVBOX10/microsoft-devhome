@@ -52,9 +52,6 @@ public partial class WidgetViewModel : ObservableObject
     public bool IsInAddMode { get; set; }
 
     [ObservableProperty]
-    private bool _isInEditMode;
-
-    [ObservableProperty]
     private bool _configuring;
 
     partial void OnWidgetChanging(Widget value)
@@ -69,6 +66,7 @@ public partial class WidgetViewModel : ObservableObject
     {
         if (Widget != null)
         {
+            _everGotDataAndTemplate = false;
             Widget.WidgetUpdated += HandleWidgetUpdated;
             _ = RenderWidgetFrameworkElementAsync();
         }
@@ -83,6 +81,8 @@ public partial class WidgetViewModel : ObservableObject
             IsCustomizable = WidgetDefinition.IsCustomizable;
         }
     }
+
+    private bool _everGotDataAndTemplate;
 
     public WidgetViewModel(
         Widget widget,
@@ -110,30 +110,32 @@ public partial class WidgetViewModel : ObservableObject
             var cardTemplate = await Widget.GetCardTemplateAsync();
             var cardData = await Widget.GetCardDataAsync();
 
-            if (string.IsNullOrEmpty(cardTemplate))
-            {
-                // TODO CreateWidgetAsync doesn't always seem to be "done", and returns blank templates and data.
-                // Put in small wait to avoid this.
-                // https://github.com/microsoft/devhome/issues/643
-                Log.Logger()?.ReportWarn("WidgetViewModel", "Widget.GetCardTemplateAsync returned empty, try wait");
-                await System.Threading.Tasks.Task.Delay(100);
-                cardTemplate = await Widget.GetCardTemplateAsync();
-                cardData = await Widget.GetCardDataAsync();
-            }
-
-            if (string.IsNullOrEmpty(cardData) || string.IsNullOrEmpty(cardTemplate))
-            {
-                Log.Logger()?.ReportWarn("WidgetViewModel", "Widget.GetCardDataAsync returned empty, cannot render card.");
-                ShowErrorCard("WidgetErrorCardDisplayText");
-                return;
-            }
-
             Log.Logger()?.ReportDebug("WidgetViewModel", $"cardTemplate = {cardTemplate}");
             Log.Logger()?.ReportDebug("WidgetViewModel", $"cardData = {cardData}");
 
+            if (string.IsNullOrEmpty(cardData) || string.IsNullOrEmpty(cardTemplate))
+            {
+                if (!_everGotDataAndTemplate)
+                {
+                    // If we've never rendered the card before, the provider might just need more time to start up.
+                    Log.Logger()?.ReportWarn("WidgetViewModel", "Something returned empty, cannot render card yet.");
+                    ShowLoadingCard();
+                    return;
+                }
+                else
+                {
+                    // If we have rendered the card, something went wrong and we should show an error.
+                    Log.Logger()?.ReportWarn("WidgetViewModel", "Something returned empty, cannot render card.");
+                    ShowErrorCard("WidgetErrorCardDisplayText");
+                    return;
+                }
+            }
+
+            _everGotDataAndTemplate = true;
+
             // If we're in the Add or Edit dialog, check the cardData to see if the card is in a configuration state
             // or if it is able to be pinned yet. If still configuring, the Pin button will be disabled.
-            if (IsInAddMode || IsInEditMode)
+            if (IsInAddMode)
             {
                 GetConfiguring(cardData);
             }
@@ -282,19 +284,35 @@ public partial class WidgetViewModel : ObservableObject
 
             foreach (var adaptiveWarning in cardResult.Warnings)
             {
-                var adaptiveErrorBlock = new TextBlock
+                var adaptiveWarningBlock = new TextBlock
                 {
                     HorizontalAlignment = HorizontalAlignment.Center,
                     TextWrapping = TextWrapping.WrapWholeWords,
                     Text = resourceLoader.GetString("Warning: " + adaptiveWarning.StatusCode + ": " + adaptiveWarning.Message),
                     Margin = new Thickness(0, 12, 0, 0),
                 };
-                sp.Children.Add(adaptiveErrorBlock);
+                sp.Children.Add(adaptiveWarningBlock);
             }
         }
 #endif
 
         grid.Children.Add(sp);
+        return grid;
+    }
+
+    private void ShowLoadingCard()
+    {
+        _dispatcher.TryEnqueue(() =>
+        {
+            WidgetFrameworkElement = GetLoadingCard();
+        });
+    }
+
+    private FrameworkElement GetLoadingCard()
+    {
+        var grid = new Grid();
+        var spinner = new ProgressRing();
+        grid.Children.Add(spinner);
         return grid;
     }
 
